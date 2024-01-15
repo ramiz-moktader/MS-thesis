@@ -1,0 +1,188 @@
+/**
+ * @GEE JS API script
+ * @description:
+ * This script processes satellite images for specified regions of interest (ROIs),
+ * generates NDVI, NDMI, and NDWI indices, and prepares a concatenated raster image
+ * containing NDVI, NDMI, and NDWI bands. It exports the image to Google Drive.
+ *
+ * @author: Md. Moktader Moula
+ * @email: ramizmoktader064@gmail.com
+ * @version 1.0
+ */
+
+///Create a region of interest. I use a Line shape 
+
+// var roi = /* color: #f70000 */ee.FeatureCollection(
+//         [ee.Feature(
+//             ee.Geometry.LineString(
+//                 [[91.61293835248053, 22.70690375847715],
+//                 [91.62113518323004, 22.70916031538245],
+//                 [91.62735790814459, 22.710823017724298],
+//                 [91.6324219187647, 22.709872904573086]]),
+//             {
+//               "system:index": "0"
+//             })]);
+
+
+// Import Sentinel-2 image collection
+var sentinel2 = ee.ImageCollection('COPERNICUS/S2_SR')
+    // Filter by date range
+    .filterDate('2022-01-01', '2022-12-31');
+
+/**
+ * Function to create a buffer for each feature in a given FeatureCollection
+ * and generate NDVI, NDMI, and NDWI indices.
+ *
+ * @function
+ * @param {string} roiName - Name of the region of interest.
+ * @param {ee.ImageCollection} satelliteImgCollection - Image collection from Google Earth Engine.
+ * @param {ee.FeatureCollection} roi - Shapefile or FeatureCollection of the region of interest.
+ * @param {boolean} generateBuffer - Flag to determine whether to generate a buffer.
+ * @param {number} [bufferLength] - Length of the buffer (applicable if generateBuffer is true).
+ * @returns {ee.Image} - Image containing NDVI, NDMI, and NDWI bands.
+ *
+ * @throws {Error} Throws an error if the export process fails.
+ */
+var createBufferAndIndices = function(roiName, satelliteImgCollection, roi, generateBuffer, bufferLength) {
+  // Center the map on the region of interest
+  Map.centerObject(roi);
+  Map.addLayer(roi, {}, "Region of Interest");
+
+  var finalRoi;
+
+  // Function to create buffer for each feature in the FeatureCollection
+  var bufferFeatures = function(feature) {
+    var buffered = feature.geometry().buffer(bufferLength);
+    return feature.setGeometry(buffered);
+  };
+
+  // Check if buffer generation is requested
+  if (generateBuffer) {
+    finalRoi = roi.map(bufferFeatures);
+    Map.addLayer(finalRoi, {}, "Buffered Region of Interest");
+
+    // Export the buffered features to Google Drive as a Shapefile
+    Export.table.toDrive({
+      collection: finalRoi,
+      fileFormat: "SHP",
+      description: roiName + "_" + "buffer",
+      folder: "Buffered Regions"
+    });
+  } else {
+    finalRoi = roi;
+  }
+
+  // Import image collection filtered by the selected region of interest
+  var imageCollection = satelliteImgCollection
+    .filterBounds(finalRoi);
+
+  // Function to calculate normalized difference vegetation index (NDVI)
+  var calculateNDVI = function(image) {
+    var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+    return image.addBands(ndvi);
+  };
+
+  // Map the NDVI calculation function over the image collection
+  var ndviCollection = imageCollection.map(calculateNDVI);
+
+  // Select and filter NDVI bands, then calculate the mean
+  var ndvi = ndviCollection.select('NDVI').mean().clip(finalRoi);
+
+  // Function to calculate normalized difference moisture index (NDMI)
+  var calculateNDMI = function(image) {
+    var ndmi = image.normalizedDifference(['B8', 'B11']).rename('NDMI');
+    return image.addBands(ndmi);
+  };
+
+  // Map the NDMI calculation function over the image collection
+  var ndmiCollection = imageCollection.map(calculateNDMI);
+
+  // Select and filter NDMI bands, then calculate the mean
+  var ndmi = ndmiCollection.select('NDMI').mean().clip(finalRoi);
+
+  // Function to calculate normalized difference water index (NDWI)
+  var calculateNDWI = function(image) {
+    var ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI');
+    return image.addBands(ndwi);
+  };
+
+  // Map the NDWI calculation function over the image collection
+  var ndwiCollection = imageCollection.map(calculateNDWI);
+
+  // Select and filter NDWI bands, then calculate the mean
+  var ndwi = ndwiCollection.select('NDWI').mean().clip(finalRoi);
+
+var vizPeram = {
+  min: -1,
+  max: 1,
+  palette: ['gray', 'green', 'yellow','red']
+};
+
+Map.addLayer(ndvi,vizPeram,"NDVI_along_roi",0)
+Map.addLayer(ndmi,vizPeram,"ndmi_along_roi",0)
+Map.addLayer(ndwi,vizPeram,"ndwi_along_roi",0)
+  // Combine NDVI, NDMI, and NDWI bands into a single image
+  var ndViMiWi = ee.Image.cat(ndvi, ndmi, ndwi);
+
+  // Print the image and region of interest name
+  print(ndViMiWi, roiName + "_ND_vi_mi_wi_Combined_Image");
+
+  // Add layers to the map for visualization
+  Map.addLayer(ndViMiWi, {}, roiName + "_NDVI_NDMI_NDWI", 0);
+
+  try {
+    // Export the combined indices image to Google Drive
+    Export.image.toDrive({
+      image: ndViMiWi,
+      scale: 10,
+      region: finalRoi,
+      folder: "All_Streams_Image_with_Indices",
+      fileNamePrefix: roiName + '_NDVI_NDMI_NDWI',
+      description: roiName + "_NDVI_NDMI_NDWI_Indices_Map",
+      fileFormat: 'GeoTIFF',
+      formatOptions: {
+        cloudOptimized: true
+      }
+    });
+  } catch (error) {
+    throw new Error('Export failed. ' + error);
+  }
+
+  // Return the resulting image
+  return ndViMiWi;
+};
+
+/** 
+ * Example Usage:
+ * Now let's call createBufferAndIndices() function and pass necessary parameters.
+ * This function requires five parameters:
+ * - roiName:                The name of your ROI, provide a string or text.
+ * - satelliteImgCollection: The Sentinel-2 satellite image collection that you want to use.
+ * - roi:                    The FeatureCollection or shapefile of your region. If you draw a custom ROI in GEE,
+ *                           make sure you save it as FeatureCollection.
+ * - generateBuffer:         Whether you want to generate a buffer area for your ROI or not. 
+ *                           If you want to generate a buffer, pass "true"; otherwise, pass "false".
+ * - bufferLength:           If you pass "true" to generate a buffer area around your ROI, you need to
+ *                           pass an integer value or number that will indicate the minimum distance of
+ *                           your buffer from your ROI. If you pass "false" before, you are not required
+ *                           to pass anything this time.
+ */
+
+// Example 1: With Buffer
+// var myRoiWithBuffer = createBufferAndIndices("RoiWithBuffer", sentinel2, roi, true, 30);
+
+// Example 2: Without Buffer
+var myRoiWithoutBuffer = createBufferAndIndices("RoiWithoutBuffer", sentinel2, roi, false);
+
+// var visualizationRGB = {
+//   bands: ['NDVI', 'NDMI', 'NDWI'],
+//   min: -1,
+//   max: 1,
+// };
+
+// // Add the processed image to the map with the specified visualization
+// Map.addLayer(myRoiWithBuffer, visualizationRGB, 'RGB Visualization (NIR-Red-Green)');
+
+Map.addLayer(table,{},"Stream")
+
+createBufferAndIndices
